@@ -1,12 +1,19 @@
 import os
-import hmac
 from collections import defaultdict
 from datetime import date
 import httpx
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import PlainTextResponse
+from oauth import RequireOAuth
+from mcp.types import ToolAnnotations
+from mcp.server.transport_security import TransportSecuritySettings
+from urllib.parse import urlsplit
 
-mcp = FastMCP('harvest-time-tracking', stateless_http=True, json_response=True)
+public_origin = os.environ.get('AUTH0_AUDIENCE', 'https://harvest-connector-yvdj.onrender.com')
+mcp = FastMCP('harvest-time-tracking', stateless_http=True, json_response=True,
+              transport_security=TransportSecuritySettings(
+                  enable_dns_rebinding_protection=True,
+                  allowed_hosts=[urlsplit(public_origin).netloc, 'localhost:*', '127.0.0.1:*'],
+                  allowed_origins=[public_origin, 'http://localhost:*', 'http://127.0.0.1:*']))
 BASE = 'https://api.harvestapp.com/v2'
 
 async def fetch_all(path: str, params: dict | None = None):
@@ -37,19 +44,19 @@ async def fetch_all(path: str, params: dict | None = None):
                 raise ValueError('Too many pages; narrow your date range')
     return items
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True), meta={'securitySchemes': [{'type': 'oauth2', 'scopes': ['read:harvest']}]})
 async def list_people() -> list[dict]:
     """List Harvest users visible to the authenticated account, with IDs, names and active status."""
     users = await fetch_all('users')
     return [{'id': u['id'], 'name': f"{u.get('first_name','')} {u.get('last_name','')}".strip(), 'email': u.get('email'), 'is_active': u.get('is_active')} for u in users]
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True), meta={'securitySchemes': [{'type': 'oauth2', 'scopes': ['read:harvest']}]})
 async def list_projects() -> list[dict]:
     """List Harvest projects including project IDs and names."""
     projects = await fetch_all('projects')
     return [{'id': p['id'], 'name': p.get('name'), 'client': (p.get('client') or {}).get('name'), 'is_active': p.get('is_active')} for p in projects]
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True), meta={'securitySchemes': [{'type': 'oauth2', 'scopes': ['read:harvest']}]})
 async def list_time_entries(start_date: str, end_date: str, user_id: int | None = None, project_id: int | None = None) -> list[dict]:
     """Read employee time entries in an inclusive YYYY-MM-DD date range. Optionally filter by Harvest user or project ID."""
     if date.fromisoformat(start_date) > date.fromisoformat(end_date):
@@ -60,7 +67,7 @@ async def list_time_entries(start_date: str, end_date: str, user_id: int | None 
     entries = await fetch_all('time_entries', params)
     return [{'id': e['id'], 'date': e.get('spent_date'), 'employee': (e.get('user') or {}).get('name'), 'user_id': (e.get('user') or {}).get('id'), 'project': (e.get('project') or {}).get('name'), 'task': (e.get('task') or {}).get('name'), 'hours': e.get('hours'), 'billable': e.get('billable'), 'notes': e.get('notes'), 'approval_status': e.get('approval_status')} for e in entries]
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True), meta={'securitySchemes': [{'type': 'oauth2', 'scopes': ['read:harvest']}]})
 async def hours_summary(start_date: str, end_date: str, group_by: str = 'employee') -> list[dict]:
     """Summarize recorded hours by employee, project or day for an inclusive YYYY-MM-DD date range. This is recorded time, not a determination of missing shifts."""
     if group_by not in ('employee', 'project', 'day'):
@@ -72,27 +79,4 @@ async def hours_summary(start_date: str, end_date: str, group_by: str = 'employe
         totals[key or '(unspecified)'] += float(e['hours'] or 0)
     return [{group_by: k, 'hours': round(v, 2)} for k, v in sorted(totals.items())]
 
-class RequireBearer:
-    """Raw ASGI authorization wrapper for every incoming HTTP request."""
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope['type'] != 'http':
-            await self.app(scope, receive, send)
-            return
-        secret = os.environ.get('MCP_BEARER_TOKEN')
-        if not secret:
-            response = PlainTextResponse('Server authentication is not configured', status_code=503)
-            await response(scope, receive, send)
-            return
-        headers = dict(scope.get('headers', []))
-        supplied = headers.get(b'authorization', b'').decode('latin-1')
-        if not hmac.compare_digest(supplied, 'Bearer ' + secret):
-            response = PlainTextResponse('Unauthorized', status_code=401, headers={'WWW-Authenticate': 'Bearer'})
-            await response(scope, receive, send)
-            return
-        await self.app(scope, receive, send)
-
-app = RequireBearer(mcp.streamable_http_app())
-
+app = RequireOAuth(mcp.streamable_http_app())
