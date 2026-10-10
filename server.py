@@ -1,8 +1,10 @@
 import os
+import hmac
 from collections import defaultdict
 from datetime import date
 import httpx
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import PlainTextResponse
 
 mcp = FastMCP('harvest-time-tracking', stateless_http=True, json_response=True)
 BASE = 'https://api.harvestapp.com/v2'
@@ -70,7 +72,27 @@ async def hours_summary(start_date: str, end_date: str, group_by: str = 'employe
         totals[key or '(unspecified)'] += float(e['hours'] or 0)
     return [{group_by: k, 'hours': round(v, 2)} for k, v in sorted(totals.items())]
 
-if __name__ == '__main__':
-    mcp.settings.host = '0.0.0.0'
-    mcp.settings.port = int(os.environ.get('PORT', '8000'))
-    mcp.run(transport='streamable-http')
+class RequireBearer:
+    """Raw ASGI authorization wrapper for every incoming HTTP request."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+        secret = os.environ.get('MCP_BEARER_TOKEN')
+        if not secret:
+            response = PlainTextResponse('Server authentication is not configured', status_code=503)
+            await response(scope, receive, send)
+            return
+        headers = dict(scope.get('headers', []))
+        supplied = headers.get(b'authorization', b'').decode('latin-1')
+        if not hmac.compare_digest(supplied, 'Bearer ' + secret):
+            response = PlainTextResponse('Unauthorized', status_code=401, headers={'WWW-Authenticate': 'Bearer'})
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+app = RequireBearer(mcp.streamable_http_app())
+
