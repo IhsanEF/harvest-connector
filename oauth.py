@@ -1,12 +1,20 @@
 """MCP resource-server authentication. Auth0 owns login, PKCE and token issuance."""
 import asyncio
 import os
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 import jwt
 from starlette.responses import JSONResponse
 
 REQUIRED_SCOPE = 'read:harvest'
+WRITE_SCOPE = 'write:harvest'
+granted_permissions = ContextVar('harvest_permissions', default=frozenset())
+
+
+def require_permission(permission):
+    if permission not in granted_permissions.get():
+        raise PermissionError(f'This operation requires the assigned OAuth permission {permission}')
 DEFAULT_ISSUER = 'https://dev-n2yqg305b2t0tq1x.us.auth0.com/'
 DEFAULT_AUDIENCE = 'https://harvest-connector-yvdj.onrender.com'
 
@@ -34,7 +42,7 @@ class RequireOAuth:
             'resource': self.audience,
             'resource_name': 'Harvest Time Tracking',
             'authorization_servers': [self.issuer],
-            'scopes_supported': [REQUIRED_SCOPE],
+            'scopes_supported': [REQUIRED_SCOPE, WRITE_SCOPE],
             'bearer_methods_supported': ['header'],
         }
 
@@ -54,7 +62,7 @@ class RequireOAuth:
         if (not isinstance(scopes, str) or REQUIRED_SCOPE not in scopes.split()
                 or not isinstance(permissions, list) or REQUIRED_SCOPE not in permissions):
             return False
-        return True
+        return frozenset(scopes.split()).intersection(p for p in permissions if isinstance(p, str))
 
     def error(self, status, error=None):
         challenge = f'Bearer resource_metadata="{self.metadata_url}", scope="{REQUIRED_SCOPE}"'
@@ -98,4 +106,8 @@ class RequireOAuth:
         if not permitted:
             await self.error(403, 'insufficient_scope')(scope, receive, send)
             return
-        await self.app(scope, receive, send)
+        context = granted_permissions.set(permitted)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            granted_permissions.reset(context)

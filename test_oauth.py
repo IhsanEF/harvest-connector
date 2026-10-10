@@ -93,6 +93,8 @@ def test_jwks_outage_fails_closed(secured):
 
 def test_mcp_initialize_list_and_call(monkeypatch, secured):
     import server
+    import importlib
+    server = importlib.reload(server)
     app, private = secured
     monkeypatch.setattr(server.app, 'jwks', app.jwks)
     async def fake_fetch(path, params=None):
@@ -110,10 +112,14 @@ def test_mcp_initialize_list_and_call(monkeypatch, secured):
         assert init.json()['result']['serverInfo']['name'] == 'harvest-time-tracking'
         headers['MCP-Protocol-Version'] = init.json()['result']['protocolVersion']
         listed = client.post('/mcp', headers=headers, json={'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
-        assert len(listed.json()['result']['tools']) == 4
+        assert len(listed.json()['result']['tools']) == 7
         for tool in listed.json()['result']['tools']:
-            assert tool['_meta']['securitySchemes'][0]['scopes'] == ['read:harvest']
-            assert tool['annotations']['readOnlyHint']
+            if tool['name'] == 'update_time_entry':
+                assert tool['_meta']['securitySchemes'][0]['scopes'] == ['read:harvest', 'write:harvest']
+                assert not tool['annotations']['readOnlyHint']
+            else:
+                assert tool['_meta']['securitySchemes'][0]['scopes'] == ['read:harvest']
+                assert tool['annotations']['readOnlyHint']
         called = client.post('/mcp', headers=headers, json={
             'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
             'params': {'name': 'list_projects', 'arguments': {}}})

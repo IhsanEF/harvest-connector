@@ -1,6 +1,6 @@
 # Harvest MCP connector
 
-Read-only tools: `list_people`, `list_projects`, `list_time_entries`, `hours_summary`.
+Read tools: `list_people`, `list_projects`, `list_time_entries`, `get_time_entry`, `hours_summary`, `export_time_report`. Editing tool: `update_time_entry`. Exports return CSV content and a filename for the host to save as a downloadable file.
 
 MCP endpoint: https://harvest-connector-yvdj.onrender.com/mcp
 
@@ -27,7 +27,7 @@ and no trailing slash. The issuer must include its trailing slash.
    Compatibility Profile** so OAuth `resource` selects the Harvest API audience.
    Keep **Include Issuer in Authorization Responses** enabled (currently
    advertised as enabled by the tenant's public discovery document).
-2. **Applications > APIs > Harvest API > Permissions**: add `read:harvest`.
+2. **Applications > APIs > Harvest API > Permissions**: add `read:harvest` and `write:harvest`.
    Under **Settings**, retain RS256, enable **RBAC** and **Add Permissions in the
    Access Token**. Assign this permission through a role only to approved users.
    Every approved user can read the single Harvest account stored in Render.
@@ -35,7 +35,7 @@ and no trailing slash. The issuer must include its trailing slash.
    does not advertise CIMD. The plugin uses DCR. Enable **Dynamic Client
    Registration** in tenant advanced settings. Under the Harvest API's
    **Settings > Default Permissions for Third-Party Applications**, select
-   **Authorized for User-Delegated Access** and select only `read:harvest`.
+   **Authorized for User-Delegated Access** and select only `read:harvest` and `write:harvest`.
    Do not enable Client Access. DCR requires this default client grant; it lets
    third-party clients request the permission, while RBAC and user consent still
    control who can actually read Harvest. Under **Authentication > Database
@@ -76,7 +76,7 @@ metadata at `/.well-known/oauth-protected-resource` and its `/mcp` variant.
 Unauthenticated requests receive a 401 discovery challenge. Tokens must pass
 RS256 verification using Auth0's cached and refreshable JWKS, exact issuer and
 audience checks, expiry and issued-at checks, and subject validation. Access also
-requires both `scope` and Auth0 RBAC `permissions` to contain `read:harvest`.
+requires both `scope` and Auth0 RBAC `permissions` to contain `read:harvest`. Editing additionally requires `write:harvest` in both claims.
 Missing permissions return 403. JWKS outages return 503 without granting access.
 The old static `MCP_BEARER_TOKEN` is no longer accepted. Discovery and health
 return no Harvest data. DNS rebinding protection remains enabled.
@@ -87,3 +87,9 @@ They cover invalid signatures, issuer, audience, expiry, missing claims,
 algorithm confusion, old static tokens, permissions, discovery, outages and
 authenticated MCP initialize/list/call. A real ChatGPT login and Harvest query
 still require completing the Auth0 client grant and assigning the user's role.
+
+## Editing and exports
+
+Give Taha both read:harvest and write:harvest; other read-only users need only read:harvest. Editing uses PATCH for a single existing entry and only fields specified by the user. First call get_time_entry (or use list_time_entries) and pass the current updated_at value. The server checks that value immediately before PATCH and refuses locked, billed, approved or running entries. Harvest does not provide an atomic conditional PATCH here, so edits made concurrently after this check can still race. Successful edits return before/after values. No create/delete or billing tools are exposed.
+
+export_time_report returns entries or grouped hours as CSV, applying optional employee/project filters. Untrusted cells are escaped for spreadsheet import. The host can create a downloadable CSV or an Excel workbook from retrieved data. No public file hosting or Harvest secrets are involved.
